@@ -1,5 +1,7 @@
 ## Study objectives
 
+Adeena Zahid, Jeonghoon Lee, Alejandra Monsivais Ibarra;
+
 The research questions this study will seek to answer are as follows:
 
 - What is the relationship between water quality, measured by the EPT index, and water chemical quality, measured by nitrogen, phosphorus, and dissolved oxygen concentrations across freshwater sampling sites along the Mississipi river 100 km north of the Gulf of Mexico? 
