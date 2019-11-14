@@ -2,7 +2,7 @@
 
 EEB313 2019 - Group Project - Hot Dawg
 
-Alejandra Monsivais Ibarra, Jeonghoon Lee, Adeena Zahid
+Alejandra Monsivais Ibarra, Jeonghoon Lee, Adeena Zahid.
 
 ## Possible Analyses
 Initially, the relationship between water chemistry and water quality (EPT) index will need to be found. The Purpose of the following sections (EPT Index Data Wrangling, Water Chemistry Data Wrangling, Creating the Final Data Set,Creating mixed effects models) will be to determine which, if any of the analyzed chemicals had a significant effect on EPT values. 
