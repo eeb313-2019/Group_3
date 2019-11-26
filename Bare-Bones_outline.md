@@ -1,4 +1,5 @@
 ## Introduction 
+This is the format for the final paper. Please use it as a guide for what to research. 
 
 **First paragraph:**
 
