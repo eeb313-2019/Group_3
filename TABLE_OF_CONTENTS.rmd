@@ -1,0 +1,9 @@
+**datasets**: Contains the three datasets from the US EPA NRSA used in this study in csv file format (Benthic Macroinvertebrates, Site Geo-coordinates, Water Chemistry). 
+
+**doc**: Contains our final project report in rmd format as well as all R-code used for statistical analyses and figure formation in the study. This folder also contrains the initial analysis plan, the objectives of the study and the project schedule. 
+
+**plots**: Contains all plots and tables produced for the final project report as well as a folder containing all mockplots created for the mid project update. 
+
+
+
+
