@@ -1,0 +1,550 @@
+---
+title: "EEB313 - Group Project - Code"
+output:
+  pdf_document:
+    toc: false
+    number_section: true
+---
+
+**Team Hot Dawg**
+
+**Adeena, Alejandra, Jeonghoon**
+
+# Loading in all necessary packages and all required datasets
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(MuMIn)
+library(lme4)
+library(car)
+library(lmerTest)
+library(ggmap)
+library(sjPlot)
+
+# All datasets were provided by the US EPA (Rivers and Streams from 2008-2009).
+# The datasets were downloaded as .txt files and were converted to .csv files before proceeding.
+
+macroinvert <- read_csv("~/Desktop/Current Courses/EEB313/EEB313_GroupProject/datasets/Benthic Macroinvertebrates.csv")
+waterchem <- read_csv("~/Desktop/Current Courses/EEB313/EEB313_GroupProject/datasets/Water Chemistry.csv")
+sitegeo <- read_csv("~/Desktop/Current Courses/EEB313/EEB313_GroupProject/datasets/Site Geo-coordinates.csv")
+```
+
+# Creating the appropriate dataframes
+
+```{r warning=FALSE}
+
+# Datasets were filtered to include data values collected from the summer months (June, July, and August).
+# Datasets were filtered to exclude all duplicate observations.
+# All chemistry values were appropriately transformed to be in the same unit (ug/L).
+
+macroinvert_filt <- macroinvert %>%
+  separate(col = DATE_COL, into = c("DAY", "MONTH", "YEAR"), sep = "-") %>%
+  filter(MONTH == "Jun" | MONTH == "Jul" | MONTH == "Aug") %>%
+  filter(SAMPLE_CAT == "P") %>%
+  select(SITE_ID, TARGET_TAXON, TOTAL, YEAR)
+
+waterchem_filt <- waterchem %>%
+  select(-YEAR) %>%
+  separate(col = DATE_COL, into = c("DAY", "MONTH", "YEAR"), sep = "-") %>%
+  filter(MONTH == "Jun" | MONTH == "Jul" | MONTH == "Aug") %>%
+  filter(SAM_CODE == "REGULAR" & SAMPLE_CAT == "P") %>%
+  mutate(KTL = K * 1000, CTL = DOC * 1000) %>%
+  group_by(SITE_ID, YEAR) %>%
+  summarise(mean_NTL = mean(NTL),
+            mean_PTL = mean(PTL),
+            mean_KTL = mean(KTL),
+            mean_CTL = mean(CTL),
+            mean_PH = mean(PHLAB)) %>%
+  select(SITE_ID, mean_NTL, mean_PTL, mean_KTL, mean_CTL, mean_PH, YEAR)
+
+sitegeo_filt <- sitegeo %>%
+  select(-YEAR) %>%
+  separate(col = DATE_COL, into = c("DAY", "MONTH", "YEAR"), sep = "-") %>%
+  filter(MONTH == "Jun" | MONTH == "Jul" | MONTH == "Aug") %>%
+  group_by(SITE_ID, YEAR) %>%
+  select(SITE_ID, XLAT_DD, XLON_DD, YEAR)
+
+# Relative EPT indices were calculated by dividing the sum of Ephemeroptera, Plecoptera, and Trichoptera abundances by the total macroinvertebrate abundance.
+# Relative EPT indices were calculated for each site per year.
+
+macroinvert_waterchem <- macroinvert_filt %>%
+  inner_join(waterchem_filt, by = c("SITE_ID", "YEAR")) %>%
+  group_by(SITE_ID, YEAR) %>%
+  mutate(SUM_TOTAL = sum(TOTAL))
+
+macroinvert_waterchem_plec <- macroinvert_waterchem %>%
+  filter(TARGET_TAXON == "PLECOPTERA") %>%
+  group_by(SITE_ID, YEAR) %>%
+  mutate(PLEC_ABUN = sum(TOTAL)) %>%
+  select(SITE_ID, PLEC_ABUN, YEAR)
+
+macroinvert_waterchem_tri <- macroinvert_waterchem %>%
+  filter(TARGET_TAXON == "TRICHOPTERA") %>%
+  group_by(SITE_ID, YEAR) %>%
+  mutate(TRI_ABUN = sum(TOTAL)) %>%
+  select(SITE_ID, TRI_ABUN, YEAR)
+
+macroinvert_waterchem_ephe <- macroinvert_waterchem %>%
+  filter(TARGET_TAXON == "EPHEMEROPTERA") %>%
+  group_by(SITE_ID, YEAR) %>%
+  mutate(EPHE_ABUN = sum(TOTAL)) %>%
+  select(SITE_ID, EPHE_ABUN, YEAR)
+
+# Sites that possessed relative EPT indices of 0 were removed.
+# Longitude coordinate values were multiplied by -1 in order to reflect the fact that the sites were in the Western hemisphere (ggmap function requires negative longitudinal data to represent Western coordinate data).
+# Sites were assessed using a two-point Likert scale ('Good' and 'Poor') based on literature chemical threshold values.
+# Site ID, Year, and all chemical site quality variables were factored to be usable within linear regression models.
+
+mws_df <- macroinvert_waterchem %>%
+  left_join(macroinvert_waterchem_plec, by = c("SITE_ID", "YEAR")) %>%
+  left_join(macroinvert_waterchem_tri, by = c("SITE_ID", "YEAR")) %>%
+  left_join(macroinvert_waterchem_ephe, by = c("SITE_ID", "YEAR")) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  inner_join(sitegeo_filt, by = c("SITE_ID", "YEAR")) %>%
+  group_by(SITE_ID, YEAR) %>%
+  mutate(EPT_INDEX = (PLEC_ABUN + TRI_ABUN + EPHE_ABUN) / SUM_TOTAL) %>%
+  filter(EPT_INDEX != 0) %>%
+  ungroup() %>%
+  mutate(XLON_DD = -1 * XLON_DD) %>%
+  select(SITE_ID, XLAT_DD, XLON_DD, YEAR,
+         mean_NTL, mean_PTL, mean_KTL, mean_CTL, mean_PH, EPT_INDEX) %>%
+  group_by(SITE_ID, XLAT_DD, XLON_DD, YEAR,
+           mean_NTL, mean_PTL, mean_KTL, mean_CTL, mean_PH, EPT_INDEX) %>%
+  summarise() %>%
+  mutate(CTL_QUAL =
+           if (mean_CTL >= 3600 & mean_CTL <= 5800) {
+             "Good"
+             } else{
+               "Poor"}) %>%
+  mutate(KTL_QUAL =
+           if (mean_KTL >= 1500 & mean_KTL <= 2880) {
+             "Good"
+             } else{
+               "Poor"}) %>%
+  mutate(NTL_QUAL =
+           if (mean_NTL <= 700) {
+             "Good"
+             } else{
+               "Poor"}) %>%
+  mutate(PTL_QUAL =
+           if (mean_PTL <= 20) {
+             "Good"
+             } else{
+               "Poor"}) %>%
+  mutate(PH_QUAL =
+           if (mean_PH >= 6.5 & mean_PH <= 9) {
+             "Good"
+             } else{
+               "Poor"}) %>%
+  ungroup() %>%
+  mutate(SITE_ID = as.factor(SITE_ID),
+         YEAR = as.factor(YEAR),
+         CTL_QUAL = as.factor(CTL_QUAL),
+         KTL_QUAL = as.factor(KTL_QUAL),
+         NTL_QUAL = as.factor(NTL_QUAL),
+         PTL_QUAL = as.factor(PTL_QUAL),
+         PH_QUAL = as.factor(PH_QUAL))
+
+mws_long_df <- mws_df %>%
+  pivot_longer(mean_NTL:mean_PH,
+               names_to = "WATER_CHEM", values_to = "CHEM_VAL")
+
+# The final dataframe was filtered to select sites found along the Potomac river.
+# Distance values for each site were sourced from Google Maps and were relative to the water purification plant found on the Potomac river.
+
+Potomac_df <- mws_df %>%
+  filter(SITE_ID == "FW08MD016" | SITE_ID == "FW08MD009" |
+           SITE_ID == "FW08MD024" | SITE_ID == "FW08MD012" |
+           SITE_ID == "FW08WV031" | SITE_ID == "FW08MD015") %>%
+  mutate(DISTANCE = c(17.9, 115.5, -167.83, 5.3, 110.6, -73.91))
+
+Potomac_long_df <- Potomac_df %>%
+  pivot_longer(mean_NTL:mean_PH,
+               names_to = "WATER_CHEM", values_to = "CHEM_VAL")
+```
+
+# Plotting the scatterplots
+
+```{r}
+
+# Default facet labels were replaced with proper names of the five target variables
+
+chem_proper <- c("Dissolved Carbon", "Potassium",
+                 "Nitrogen", "pH", "Phosphorus")
+names(chem_proper) <- c("mean_CTL", "mean_KTL", "mean_NTL",
+                        "mean_PH", "mean_PTL")
+
+# Scatterplots were produced to visualize the distributions of EPT indices against the five target chemical values.
+
+EPT_scatter <- ggplot(data = mws_long_df, aes(x = CHEM_VAL, y = EPT_INDEX)) +
+  geom_point() +
+  facet_wrap(~WATER_CHEM, scales = "free_x",
+             labeller = labeller(WATER_CHEM = chem_proper)) +
+  scale_x_continuous(trans = "log10") +
+  scale_y_continuous(trans = "log10") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  labs(caption = "Figure 2. Scatterplot showing EPT indices for sites
+       with concentrations of the target variables; dissolved carbon, potassium,
+       nitrogen, pH and phosphorus, as the independent variables in both 2008 and 2009 combined.
+       Each point represents one sample site.
+       Note that chemical concentrations, as well as EPT index values, have been log transformed.",
+       x = "Chemistry amount (ug/L) (Log10)", y = "EPT Index (Log10)")
+
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/EPT_scatter.png",
+       plot = EPT_scatter, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/EPT_scatter.pdf",
+       plot = EPT_scatter, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+```
+
+## Outliers
+
+The outliers present within the dataset were identified and discussed within the research article.
+
+FW08PA018 - NTL outlier
+FW08UT041 - KTL outlier
+FW01PA029 - PTL outlier
+FW08MN016 - CTL outlier
+FW08MN011 - CTL outlier
+FW08PA022 - pH outlier
+
+# Plotting the distribution histograms
+
+```{r}
+
+# Shapiro-Wilk Normality tests were conducted to check for Normality within EPT index distributions per year.
+
+shapiro.test((mws_df %>% filter(YEAR == "08"))$EPT_INDEX)
+
+shapiro.test((mws_df %>% filter(YEAR == "09"))$EPT_INDEX)
+
+# A Wilcoxon rank-sum test was conducted to see if there was a significant difference between median EPT index for 2008 and median EPT index for 2009.
+
+wilcox.test(x = (mws_df %>% filter(YEAR == "09"))$EPT_INDEX,
+            y = (mws_df %>% filter(YEAR == "08"))$EPT_INDEX,
+            alternative = "two.sided", var.equal = FALSE)
+
+# A frequency histogram was constructed to visualize the distribution of EPT indices across all sites.
+
+EPT_hist <- ggplot(mws_df, aes(x = EPT_INDEX)) +
+  geom_histogram() +
+  scale_x_continuous(trans = "log10") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  labs(caption = "Figure 1. Histogram depicting the frequency distributions of EPT indices
+       across all sites sampled during the years 2008 and 2009.
+       Distribution is not normal (Shapiro-Wilks test p-value = 2.2*10^-16).
+       EPT index values have been log-transformed.",
+       x = "EPT Index (Log10)", y = "Frequency")
+
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/EPT_hist.png",
+       plot = EPT_hist, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/EPT_hist.pdf",
+       plot = EPT_hist, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+
+# A final Shapiro-Wilk Normality test was conducted to confirm that the distribution of EPT indices (without accounting for Year) was non-Normal.
+
+shapiro.test(mws_df$EPT_INDEX)
+```
+
+# Constructing the linear regression models using EPT index as the response variable and chemical site qualities as predictor variables
+
+The dataframe was found to be nested by YEAR, not by SITE_ID (there was only one observation per site). Additionally, YEAR variables suffer from complete separation.
+
+```{r}
+
+# A linear mixed-effects regression model was created with EPT index as the response variable, chemical site qualities (one for each of the five target variables) and their interactions as the fixed effects, and year as a random effect.
+
+lm_mws_year <- lmer(EPT_INDEX ~ NTL_QUAL * PTL_QUAL *
+                      KTL_QUAL * CTL_QUAL * PH_QUAL + (1 | YEAR),
+                    data = mws_df)
+summary(lm_mws_year)
+
+# A linear regression model was created with EPT index as the response variable with chemical site qualities (one for each of the five target variables) and their interactions as the fixed effects.
+
+lm_mws_no_year <- lm(EPT_INDEX ~ NTL_QUAL * PTL_QUAL *
+                       KTL_QUAL * CTL_QUAL * PH_QUAL,
+                     data = mws_df)
+summary(lm_mws_no_year)
+
+# The AIC values for the two linear models created above were calculated and compared.
+
+AIC(lm_mws_no_year, lm_mws_year)
+
+# A Violin plot and a dotplot were created to visualise the distribution of EPT indices across the different combinations of Nitrogen site quality and Phosphorus site quality (Nitrogen:Phosphorus).
+
+NP_lm_boxplot <- ggplot(data = lm_mws_no_year,
+                        aes(x = NTL_QUAL:PTL_QUAL, y = EPT_INDEX)) +
+  geom_violin() +
+  geom_dotplot(binaxis = "y", stackdir = "center", dotsize = 0.5,
+               position = position_dodge(0.5), alpha = 0.5,
+               aes(fill = NTL_QUAL:PTL_QUAL)) +
+  stat_summary(fun.data = "mean_se", fun.args = list(mult = 1),
+               geom = "pointrange", size = 0.2, width = 0.5) +
+  stat_summary(fun.data = "mean_se", fun.args = list(mult = 1),
+               geom = "errorbar", width = 0.5) +
+  scale_y_continuous(trans = "log10") +
+  theme(legend.position = "none", plot.caption = element_text(hjust = 0)) +
+  labs(caption = "Figure 4. Violin plot depicting the results of a linear model
+       with the effects of the interaction between nitrogen site quality and phosphorus site quality.
+       EPT index values are shown for the different combinations of nitrogen-phosphorus site quality interactions.
+       Sites were given a site quality ranking of ‘good’ if they were below the maximum threshold deemed safe by the USEPA.
+       If they were above this threshold, a site quality ranking of ‘poor’ was given.
+       Threshold value for nitrogen concentrations was 700 micrograms per litre.
+       Threshold value for phosphorus was 20 micrograms per litre.
+       EPT index value for good:good was 0.008110306. EPT index value for good:poor was 0.01057073.
+       EPT index value for poor:good was 0.01125076. EPT index value for poor:poor was 0.008992542.
+       P value = 0.8416. EPT Index values have been log transformed.",
+       x = "Site Quality (Nitrogen : Phosphorus)", y = "EPT Index (Log10)")
+
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/NP_lm_boxplot.png",
+       plot = NP_lm_boxplot, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/NP_lm_boxplot.pdf",
+       plot = NP_lm_boxplot, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+
+# A statistics table was produced to display the estimate values, 95% CI, and associated p-values of all predictor variables and their interactions.
+# Fixed effects and random effects are clearly distinguishable.
+# Sample sizes, R^2 values, adjusted R^2 values, and AIC values can be viewed in the summary section.
+# The linear regression model (without year as a random effect) was specially remade to exclude all singularities.
+
+lm_mws_no_year_no_sing <- lm(EPT_INDEX ~ NTL_QUAL + PTL_QUAL +
+                               KTL_QUAL + CTL_QUAL + PH_QUAL +
+                               NTL_QUAL:PTL_QUAL + NTL_QUAL:KTL_QUAL +
+                               PTL_QUAL:KTL_QUAL + NTL_QUAL:CTL_QUAL +
+                               PTL_QUAL:CTL_QUAL + KTL_QUAL:CTL_QUAL + NTL_QUAL:PH_QUAL +
+                               NTL_QUAL:PTL_QUAL:KTL_QUAL + NTL_QUAL:KTL_QUAL:CTL_QUAL,
+                             data = mws_df)
+summary(lm_mws_no_year_no_sing)
+
+(stat_table_mws <- tab_model(lm_mws_no_year_no_sing, lm_mws_year,
+                             p.val = "kr", show.df = TRUE,
+                             show.aic = TRUE, show.fstat = TRUE,
+                             CSS = list(css.depvarhead = "+color: red;",
+                                        css.firsttablecol = "font-weight: bold;",
+                                        css.summary = "color: blue;"),
+                             pred.labels = c("Intercept", "Nitrogen (Poor)",
+                                             "Phosphorus (Poor)", "Potassium (Poor)",
+                                             "Dissolved Carbon (Poor)", "pH (Poor)",
+                                             "Nitrogen (Poor) * Phosphorus (Poor)",
+                                             "Nitrogen (Poor) * Potassium (Poor)",
+                                             "Phosphorus (Poor) * Potassium (Poor)",
+                                             "Nitrogen (Poor) * Dissolved Carbon (Poor)",
+                                             "Phosphorus (Poor) * Dissolved Carbon (Poor)",
+                                             "Potassium (Poor) * Dissolved Carbon (Poor)",
+                                             "Nitrogen (Poor) * pH (Poor)",
+                                             "Nitrogen (Poor) * Phosphorus (Poor) * Potassium (Poor)",
+                                             "Nitrogen (Poor) * Potassium (Poor) * Dissolved Carbon (Poor)"),
+                             dv.labels = c("EPT Index"),
+                             title = c("Table 1. Table summarizing the output of the two linear models run on the data for this study.
+                             For both models, EPT index was the response variable  and the fixed effect predictors were the same.
+                             The first three Estimates, CI and p columns represent the estimated predictor effect, 95% confidence interval values
+                             and p-values for each predictor effect in the linear model with no random effects.
+                             The next three Estimates, CI and p columns represent the linear mixed effects model, with year as a random effect.
+                             The last column represents the degrees of freedom corresponding to each fixed effect for both models.
+                             The output for the random effect of year in the linear mixed effects model is included below the fixed effects.
+                             Number of observations for both studies were 132.
+                             R2 and adjusted R2 values for both models are also included, as well as the AIC values.
+                             The linear model with no random effects had the lower AIC score.
+                             All values have been rounded to three decimal places."),
+                             file = "/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/stat_table_mws.html"))
+
+# The mean EPT index was calculated for each different combination of Nitrogen site quality and Phosphorus site quality.
+
+mean((mws_df %>% filter(NTL_QUAL == "Good" & PTL_QUAL == "Good"))$EPT_INDEX)
+
+mean((mws_df %>% filter(NTL_QUAL == "Good" & PTL_QUAL == "Poor"))$EPT_INDEX)
+
+mean((mws_df %>% filter(NTL_QUAL == "Poor" & PTL_QUAL == "Good"))$EPT_INDEX)
+
+mean((mws_df %>% filter(NTL_QUAL == "Poor" & PTL_QUAL == "Poor"))$EPT_INDEX)
+```
+
+## Checking the assumptions of the linear regression models
+
+```{r}
+
+# A residuals vs fitted values plot was produced to check the homoscedasticity assumption of the linear regression model
+
+resid_fitted <- ggplot(data = lm_mws_no_year) +
+  geom_point(mapping = aes(x = .fitted, y = .resid)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  labs(caption = "Figure 3. Plot of the residual values against fitted values for the linear model
+       with the equation (EPT Index ~ nitrogen * phosphorus * potassium * dissolved carbon * pH).",
+       x = "Fitted values", y = "Residuals")
+
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/resid_fitted.png",
+       plot = resid_fitted, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/resid_fitted.pdf",
+       plot = resid_fitted, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+```
+
+# Constructing different linear regression models using distance as the predictor variable
+
+These linear regression models were created to investigate whether distance had a significant effect on EPT index or on chemistry amounts (for each of the five target variables). The dataframe was restricted to sites found along the Potomac river (to minimize confounding variables).
+
+```{r}
+lm_EPT <- lm(EPT_INDEX ~ DISTANCE, data = Potomac_df)
+summary(lm_EPT)
+
+lm_NTL <- lm(mean_NTL ~ DISTANCE, data = Potomac_df)
+summary(lm_NTL)
+
+lm_PTL <- lm(mean_PTL ~ DISTANCE, data = Potomac_df)
+summary(lm_PTL)
+
+lm_KTL <- lm(mean_KTL ~ DISTANCE, data = Potomac_df)
+summary(lm_KTL)
+
+lm_CTL <- lm(mean_CTL ~ DISTANCE, data = Potomac_df)
+summary(lm_CTL)
+
+lm_PH <- lm(mean_PH ~ DISTANCE, data = Potomac_df)
+summary(lm_PH)
+
+# A statistics table was produced to display the estimate values, 95% CI, and associated p-values of all predictor variables and their interactions.
+# Sample sizes, R^2 values, adjusted R^2 values, and AIC values can be viewed in the summary section.
+
+(stat_table_dist <- tab_model(lm_EPT, lm_NTL, lm_PTL, lm_KTL, lm_CTL, lm_PH,
+                              p.val = "kr", show.df = TRUE,
+                              show.aicc = TRUE, show.fstat = TRUE,
+                              CSS = list(css.depvarhead = "+color: red;",
+                                         css.firsttablecol = "font-weight: bold;",
+                                         css.summary = "color: blue;"),
+                              pred.labels = c("Intercept", "Distance"),
+                              dv.labels = c("EPT Index", "Nitrogen", "Phosphorus",
+                                            "Potassium", "Dissolved Carbon", "pH"),
+                              title = c("Table 2. Summary of the output of linear models in the Potomac river investigation.
+                              A total of six linear models were run, with distance from the Chambersburg Wastewater Treatment Plant
+                              as the predictor variable for all of them.
+                              EPT index (Figure 7) and the five target chemistry variables (Figure 8)
+                              served as the respective response variables.
+                              For each model, the estimate value of the predictor and the intercept, 95% confidence interval values
+                              and p-values have been included.
+                              Total number of observations for all models were 6.
+                              R2 and adjusted R2 values for all models are also included, as well as the AIC~C values.
+                              The model with EPT Index as the response variable had the lowest AIC~C score.
+                              All values have been rounded to three decimal places."),
+                              file = "/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/stat_table_dist.html"))
+```
+
+# Plotting the raster plots
+
+```{r}
+
+# The Google geocoding api key below is specific to Adeena Zahid's Google account.
+
+ggmap::register_google(key = "AIzaSyCs2woC5YAIJxiqmCN5s0hRK56qR8ITdYU")
+
+usa_center <- as.numeric(geocode("United States"))
+
+# Maps of the continental United States and of the Potomac river were created to serve as backdrops for the raster plots.
+
+usa_map <- ggmap(get_googlemap(center = usa_center, zoom = 3, scale = 2),
+                 extent = "normal", darken = c(0.15, "black"),
+                 maptype = "terrain", color = "color") +
+          scale_y_continuous(limits = c(25, 50)) +
+          scale_x_continuous(limits = c(-125, -60))
+
+potomac_map <- ggmap(get_googlemap(center = c(-77.5, 39), zoom = 8, scale = 2),
+                     extent = "normal", darken = c(0.15, "black"),
+                     maptype = "satellite", color = "color")
+
+# Raster plots were constructed to visualise the spatial distribution of EPT indices across the continental United States and along the Potomac river.
+
+usa_raster <- usa_map +
+  geom_point(data = mws_df,
+             aes(x = XLON_DD, y = XLAT_DD, colour = EPT_INDEX),
+             size = 1.2, alpha = 0.7) +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme(plot.caption = element_text(hjust = 0)) +
+  labs(caption = "Figure 5. Raster plot depicting EPT index values and location for all sites
+       sampled in both 2008 and 2009 throughout the continental United States.",
+       x = "Longitude", y = "Latitude", colour = "EPT Index")
+
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/usa_raster.png",
+       plot = usa_raster, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/usa_raster.pdf",
+       plot = usa_raster, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+
+potomac_raster <- potomac_map +
+  geom_point(data = Potomac_df,
+             aes(x = XLON_DD, y = XLAT_DD, colour = EPT_INDEX),
+             size = 2.5) +
+  scale_color_gradient(low = "blue", high = "red") +
+  scale_y_continuous(limits = c(38.75, 39.75)) +
+  scale_x_continuous(limits = c(-79, -76.5)) +
+  theme(plot.caption = element_text(hjust = 0)) +
+  labs(caption = "Figure 6. Raster plot depicting EPT index values and location
+       for sites along the Potomac river and in close proximity to the Chambersburg Water Treatment Facility.
+       Facility is located at 39°88’69.53”N 77°69’75.46”E.",
+       x = "Longitude", y = "Latitude", colour = "EPT Index")
+
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/potomac_raster.png",
+       plot = potomac_raster, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/potomac_raster.pdf",
+       plot = potomac_raster, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+
+# A scatterplot was constructed to visualise the distribution of EPT indices against increasing and decreasing distances from a water purification plant along the Potomac river.
+# A regression line was fitted to the scatterplot with slope and intercept values taken from the respective linear model.
+
+potomac_EPT_plot <- ggplot(data = Potomac_df,
+                           aes(x = DISTANCE, y = EPT_INDEX)) +
+  geom_point() +
+  geom_abline(slope = -5.613e-05, intercept = 3.573e-02) +
+  scale_x_continuous(breaks = seq(-200, 200, 50), limits = c(-200, 150)) +
+  theme(plot.caption = element_text(hjust = 0)) +
+  labs(caption = "Figure 7. Distribution of EPT indices across sites corresponding to their distance
+       from the Chambersburg Wastewater Treatment Plant along the Potomac river, both upstream and downstream.
+       Upstream sites represent negative distance and downstream sites represent positive distance.",
+       x = "Distance (km)", y = "EPT Index")
+
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/potomac_EPT_plot.png",
+       plot = potomac_EPT_plot, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/potomac_EPT_plot.pdf",
+       plot = potomac_EPT_plot, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+
+# Scatterplots were created to visualise the distribution of chemical values (for each of the five target chemical variables) against increasing and decreasing distances from a water purification plant along the Potomac river.
+# Regression lines were fitted to the scatterplots with slope and intercept values taken from the respective linear models.
+
+potomac_chem_plot <- ggplot(data = Potomac_long_df,
+                            aes(x = DISTANCE, y = CHEM_VAL,
+                                color = WATER_CHEM, group = WATER_CHEM)) +
+  geom_point() +
+  geom_abline(slope = 0.6804, intercept = 2535.8094, color = "red") +
+  geom_abline(slope = 2.325, intercept = 2501.238, color = "yellow") +
+  geom_abline(slope = 3.661, intercept = 1545.387, color = "green") +
+  geom_abline(slope = -1.658e-05, intercept = 8.311e+00, color = "blue") +
+  geom_abline(slope = -0.0998, intercept = 64.9729, color = "purple") +
+  scale_x_continuous(breaks = seq(-200, 200, 50), limits = c(-200, 150)) +
+  theme(plot.caption = element_text(hjust = 0)) +
+  scale_color_manual(breaks = c("Dissolved Carbon", "Potassium",
+                                "Nitrogen", "pH", "Phosphorus"),
+                     values = c("red", "yellow", "green", "blue", "purple")) +
+  scale_color_discrete(labels = c("Dissolved Carbon", "Potassium",
+                                  "Nitrogen", "pH", "Phosphorus")) +
+  labs(caption = "Figure 8. Distribution of the 5 target chemistry values across sites
+       corresponding to their distance from the Chambersburg Wastewater Treatment Plant
+       along the Potomac river, both upstream and downstream.
+       Upstream sites represent negative distance and downstream sites represent positive distance.",
+       x = "Distance (km)", y = "Chemistry Values (ug/L)", color = "Target variable")
+
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/potomac_chem_plot.png",
+       plot = potomac_chem_plot, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+ggsave("/Users/John/Desktop/Current Courses/EEB313/EEB313_GroupProject/plots/potomac_chem_plot.pdf",
+       plot = potomac_chem_plot, dpi = 300,
+       width = par("din")[1], height = par("din")[2])
+```
